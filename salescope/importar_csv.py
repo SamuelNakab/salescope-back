@@ -5,7 +5,7 @@ import django
 # 1. CONFIGURAR ENTORNO DJANGO
 # ============================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "salescope.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "salescope.salescope.settings")
 django.setup()
 
 # ============================
