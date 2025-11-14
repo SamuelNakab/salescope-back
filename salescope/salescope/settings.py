@@ -64,7 +64,7 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-ROOT_URLCONF = 'salescope.salescope.urls'
+ROOT_URLCONF = 'salescope.urls'
 
 #CORS
 CORS_ALLOW_ALL_ORIGINS = True
@@ -86,7 +86,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'salescope.salescope.wsgi.application'
+WSGI_APPLICATION = 'salescope.wsgi.application'
 
 
 # Database

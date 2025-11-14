@@ -3,7 +3,7 @@ services:
     name: salescope-backend
     env: python
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn salescope.salescope.wsgi"
+    startCommand: "gunicorn salescope.wsgi"
     envVars:
       - key: DB_HOST
         sync: false
