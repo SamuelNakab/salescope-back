@@ -1,1 +1,1 @@
-web: gunicorn salescope.wsgi
+web: gunicorn salescope.salescope.wsgi
