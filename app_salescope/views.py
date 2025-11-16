@@ -9,6 +9,7 @@ from .models import Productos, Fuente, ProductoPrecio, Venta
 import datetime
 from django.db import transaction
 import random
+from collections import defaultdict
 
 # ==========================================================
 # 1) UTILITIES FUNCTIONS
@@ -499,31 +500,27 @@ def get_prods_by_super(request, super_id):
 @api_view(["GET"])
 def get_prod_time_data(request, super_id, prod_id):
     """
-    Viene un super, una cantidad de fechas y un name.
-    -------------------------------------------------
-    Devuelve las ventas agrupadas por fecha junto con su precio.
+    Igual que data_over_time pero usando IDs y query param ?cantidad=
+    - super_id: Fuente.id (en la URL)
+    - prod_id: Productos.id (en la URL)
+    - cantidad: opcional en query params (por defecto 8)
     """
-    super_name = 0
-    product_name = 0
-    cantidad = 0
-    
+    cantidad = request.GET.get("cantidad", 8)
+
     if not super_id or not prod_id:
         return Response({"error": "Debe enviar 'super' y 'producto'"}, status=400)
 
-    # --- Buscar la fuente ---
+    # --- Buscar la fuente por id ---
     try:
-        fuente_obj = Fuente.objects.get(super=super_name)
+        fuente_obj = Fuente.objects.get(id=super_id)
     except Fuente.DoesNotExist:
-        return Response({"error": f"No tenemos datos de este supermercado: {super_name}"}, status=404)
+        return Response({"error": f"No tenemos datos de este supermercado id: {super_id}"}, status=404)
 
-    # --- Buscar el producto dentro de la fuente ---
+    # --- Buscar el producto por id y que pertenezca a la fuente ---
     try:
-        producto_obj = Productos.objects.get(
-            name=product_name,
-            fuente_id=super_id
-        )
+        producto_obj = Productos.objects.get(id=prod_id, fuente_id=fuente_obj.id)
     except Productos.DoesNotExist:
-        return Response({"error": f"No existe el producto: {product_name} en el supermercado {super_name}"}, status=404)
+        return Response({"error": f"No existe el producto id: {prod_id} en el supermercado id {super_id}"}, status=404)
 
     # --- Ventas por fecha ---
     ventas_qs = Venta.objects.filter(
@@ -573,11 +570,26 @@ def get_prod_time_data(request, super_id, prod_id):
     try:
         cantidad = int(cantidad)
         df_final = df_final.tail(cantidad)
-    except ValueError:
+    except (ValueError, TypeError):
         pass
 
     data = df_final.to_dict(orient="records")
     return Response(data)
+# ...existing code...
+
+# Response format:
+# - Returns a JSON array of objects (one per fecha), example:
+#   [
+#     {
+#       "fecha": "2025-11-01",               # fecha (string YYYY-MM-DD)
+#       "cantidad": 12.34,                   # cantidad vendida (float)
+#       "precio": 5.99,                      # precio registrado ese día (float) o null
+#       "promocion_existente": true,         # bool or null
+#       "precio_descontado": 4.99,           # float or null
+#       "promocion": "Descuento"             # string or null ("Ninguna" si no hay)
+#     },
+#     ...
+#   ]
 
 
 
@@ -585,27 +597,31 @@ def get_prod_time_data(request, super_id, prod_id):
 @api_view(["GET"])
 def get_prod_price_data(request, super_id, prod_id):
     """
-    Viene un super, una cantidad y un name
-    -------------------------------------------------
-    Devuelve las ventas que tuvo un producto en cada precio distinto,
-    con cantidad total vendida, días vigentes y promedio diario.
+    Igual que data_over_price pero usando IDs en la URL en vez de nombre y POST body.
+    Agrupa TODOS los períodos con el mismo precio y descuento (no solo consecutivos).
+    - super_id: Fuente.id en la URL
+    - prod_id: Productos.id en la URL
     """
-    super_name = request.data.get("super")
-    product_name = request.data.get("producto")
+    # --- Validación básica ---
+    if not super_id or not prod_id:
+        return Response({"error": "Debe enviar 'super' y 'producto' en la URL"}, status=400)
 
-    if not super_name or not product_name:
-        return Response({"error": "Debe enviar 'super' y 'producto'"}, status=400)
-
-    # --- Buscar el producto por nombre ---
+    # --- Buscar la fuente por id ---
     try:
-        producto = Productos.objects.get(name=product_name, fuente__super=super_name)
+        fuente_obj = Fuente.objects.get(id=super_id)
+    except Fuente.DoesNotExist:
+        return Response({"error": f"No tenemos datos de este supermercado id: {super_id}"}, status=404)
+
+    # --- Buscar el producto por id y que pertenezca a la fuente ---
+    try:
+        producto = Productos.objects.get(id=prod_id, fuente_id=fuente_obj.id)
     except Productos.DoesNotExist:
-        return Response({"error": f"No existe: {product_name} en {super_name}"}, status=404)
+        return Response({"error": f"No existe el producto id: {prod_id} en el supermercado id {super_id}"}, status=404)
 
     # --- 1. Obtener precios históricos del producto ---
     precios_qs = ProductoPrecio.objects.filter(
-        fuente__super=super_name,
-        name=product_name
+        fuente_id=fuente_obj.id,
+        name=producto.name
     ).values("fecha", "precio", "precio_descontado").order_by("fecha")
 
     if not precios_qs.exists():
@@ -618,34 +634,60 @@ def get_prod_price_data(request, super_id, prod_id):
     df_precios["fecha_fin"] = df_precios["fecha"].shift(-1)
     df_precios["fecha_fin"].fillna(datetime.date.today(), inplace=True)
 
-    resultados = []
+    # --- 3. Calcular datos de ventas para cada período ---
+    periodos = []
 
     for _, row in df_precios.iterrows():
         fecha_inicio = row["fecha"]
         fecha_fin = row["fecha_fin"]
         precio = float(row["precio"])
+        precio_descontado = float(row["precio_descontado"]) if row["precio_descontado"] else None
 
-        # --- 3. Ventas dentro del rango ---
+        # Ventas dentro del rango
         ventas_qs = Venta.objects.filter(
-            fuente__super=super_name,
+            fuente_id=fuente_obj.id,
             name=producto,
             fecha__gte=fecha_inicio,
             fecha__lt=fecha_fin
         ).values("cantidad")
 
         total_vendido = sum(v["cantidad"] for v in ventas_qs) if ventas_qs else 0
-
         dias_vigentes = max((fecha_fin - fecha_inicio).days, 1)
-        promedio_diario = round(total_vendido / dias_vigentes, 2)
 
-        resultados.append({
+        periodos.append({
             "precio": precio,
-            "precio_descontado": float(row["precio_descontado"]) if row["precio_descontado"] else None,
-            "fecha_inicio": str(fecha_inicio),
-            "fecha_fin": str(fecha_fin),
+            "precio_descontado": precio_descontado,
             "dias_vigentes": dias_vigentes,
-            "cantidad_total_vendida": total_vendido,
-            "promedio_diario_ventas": promedio_diario
+            "cantidad_total_vendida": total_vendido
         })
 
+    # --- 4. Agrupar TODOS los períodos con mismo precio y descuento (no solo consecutivos) ---
+
+    
+    grupos = defaultdict(lambda: {
+        "dias_vigentes": 0,
+        "cantidad_total_vendida": 0
+    })
+    
+    for periodo in periodos:
+        # Crear clave basada en precio y precio_descontado
+        clave = (periodo["precio"], periodo["precio_descontado"])
+        
+        grupos[clave]["dias_vigentes"] += periodo["dias_vigentes"]
+        grupos[clave]["cantidad_total_vendida"] += periodo["cantidad_total_vendida"]
+    
+    # --- 5. Convertir a lista y calcular promedio_diario_ventas ---
+    resultados = []
+    
+    for (precio, precio_descontado), datos in grupos.items():
+        promedio_diario = round(datos["cantidad_total_vendida"] / datos["dias_vigentes"], 2)
+        
+        resultados.append({
+            "precio": precio,
+            "precio_descontado": precio_descontado,
+            "dias_disponible": datos["dias_vigentes"],
+            "cantidad_total_vendida": datos["cantidad_total_vendida"],
+            "promedio_diario_ventas": promedio_diario
+        })
+    
     return Response(resultados)
